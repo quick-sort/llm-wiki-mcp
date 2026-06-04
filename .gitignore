@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Wiki data
+wikis/
+
+# Skill source (cloned at deploy time)
+skills/
