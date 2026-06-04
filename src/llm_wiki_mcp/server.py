@@ -77,6 +77,20 @@ mcp = FastMCP(
 
 
 @mcp.tool()
+async def list_wikis() -> list[str]:
+    """List all wiki names.
+
+    Returns a list of wiki names found in the wikis root directory.
+    """
+    wikis_root = Path(_cfg["wikis_root"])
+    if not wikis_root.exists():
+        return []
+    return sorted(
+        d.name for d in wikis_root.iterdir() if d.is_dir() and not d.name.startswith(".")
+    )
+
+
+@mcp.tool()
 async def ingest(wiki_name: str, source: str = "", content: str = "") -> str:
     """Ingest content into a wiki knowledge base.
 
