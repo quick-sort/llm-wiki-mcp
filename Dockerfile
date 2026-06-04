@@ -34,6 +34,7 @@ VOLUME ["/home/agent"]
 WORKDIR /app
 ENV UV_LINK_MODE=copy
 ENV HOME="/home/agent"
+ENV UV_INDEX_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
 
 # Install Python dependencies (cached layer)
 RUN --mount=type=cache,target=/root/.cache/uv \
