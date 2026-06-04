@@ -8,6 +8,7 @@ from pathlib import Path
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from markitdown import MarkItDown
 
 from .agent import run_ingest, run_query
 
@@ -16,14 +17,22 @@ _cfg: dict = {
     "wikis_root": os.environ.get("LLM_WIKI_ROOT", str(Path.cwd() / "wikis")),
 }
 
-mcp = FastMCP(
-    "llm-wiki-mcp",
-    instructions=(
-        "A wiki knowledge base MCP server. Use 'ingest' to add documents (files, URLs, or raw text) "
-        "to a named wiki, and 'query' to ask questions about the wiki's knowledge. "
-        "Powered by llm-wiki-agent skills via Claude Agent SDK."
-    ),
-)
+_MARKDOWN_EXTENSIONS = {".md", ".markdown", ".txt"}
+
+
+def _get_markitdown() -> MarkItDown:
+    """Create a MarkItDown instance, optionally with LLM client for enhanced conversion."""
+    api_key = os.environ.get("OPENAI_API_KEY")
+    base_url = os.environ.get("OPENAI_BASE_URL")
+
+    if api_key and base_url:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=api_key, base_url=base_url)
+        model = os.environ.get("OPENAI_MODEL", "gpt-4o")
+        return MarkItDown(llm_client=client, llm_model=model)
+
+    return MarkItDown()
 
 
 def _save_raw(wiki_dir: Path, name: str, content: str) -> Path:
@@ -36,6 +45,18 @@ def _save_raw(wiki_dir: Path, name: str, content: str) -> Path:
     return path
 
 
+def _convert_file(file_path: str) -> tuple[str, str]:
+    """Convert a non-markdown file to markdown using markitdown.
+
+    Returns (name, markdown_content).
+    """
+    p = Path(file_path)
+    name = p.stem
+    md = _get_markitdown()
+    result = md.convert(str(p))
+    return name, result.text_content
+
+
 async def _fetch_url(url: str) -> tuple[str, str]:
     """Fetch content from a URL, return (name, content)."""
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
@@ -45,12 +66,22 @@ async def _fetch_url(url: str) -> tuple[str, str]:
     return name, resp.text
 
 
+mcp = FastMCP(
+    "llm-wiki-mcp",
+    instructions=(
+        "A wiki knowledge base MCP server. Use 'ingest' to add documents (files, URLs, or raw text) "
+        "to a named wiki, and 'query' to ask questions about the wiki's knowledge. "
+        "Powered by llm-wiki-agent skills via Claude Agent SDK."
+    ),
+)
+
+
 @mcp.tool()
 async def ingest(wiki_name: str, source: str = "", content: str = "") -> str:
     """Ingest content into a wiki knowledge base.
 
     Supports three input modes:
-    - Local file path via `source`
+    - Local file path via `source` (PDF, DOCX, PPTX, etc. auto-converted via markitdown)
     - URL via `source` (starts with http:// or https://)
     - Raw text via `content`
 
@@ -76,7 +107,17 @@ async def ingest(wiki_name: str, source: str = "", content: str = "") -> str:
         local_path = _save_raw(wiki_dir, f"{wiki_name}_raw", content)
         return await run_ingest(wiki_dir, str(local_path))
 
-    return await run_ingest(wiki_dir, source)
+    # Local file — convert non-markdown via markitdown
+    p = Path(source)
+    if not p.exists():
+        return f"Error: file not found: {source}"
+
+    if p.suffix.lower() in _MARKDOWN_EXTENSIONS:
+        return await run_ingest(wiki_dir, source)
+
+    name, md_content = _convert_file(source)
+    local_path = _save_raw(wiki_dir, name, md_content)
+    return await run_ingest(wiki_dir, str(local_path))
 
 
 @mcp.tool()
