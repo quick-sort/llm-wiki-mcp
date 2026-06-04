@@ -54,6 +54,8 @@ USER agent
 ENV UV_CACHE_DIR="/home/agent/.cache/uv"
 ENV PATH="/home/agent/.npm-global/bin:$PATH"
 ENV ANTHROPIC_API_KEY=""
+ENV ANTHROPIC_BASE_URL=""
+ENV ANTHROPIC_MODEL=""
 ENV LLM_WIKI_ROOT=/data/wikis
 
 VOLUME /data
