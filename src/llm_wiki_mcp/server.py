@@ -6,6 +6,7 @@ import argparse
 import os
 from pathlib import Path
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 
 from .agent import run_ingest, run_query
@@ -18,26 +19,63 @@ _cfg: dict = {
 mcp = FastMCP(
     "llm-wiki-mcp",
     instructions=(
-        "A wiki knowledge base MCP server. Use 'ingest' to add documents (files or URLs) "
+        "A wiki knowledge base MCP server. Use 'ingest' to add documents (files, URLs, or raw text) "
         "to a named wiki, and 'query' to ask questions about the wiki's knowledge. "
         "Powered by llm-wiki-agent skills via Claude Agent SDK."
     ),
 )
 
 
-@mcp.tool()
-async def ingest(wiki_name: str, source: str) -> str:
-    """Ingest a document into a wiki knowledge base.
+def _save_raw(wiki_dir: Path, name: str, content: str) -> Path:
+    """Save raw content to wiki's raw/ directory and return the file path."""
+    raw_dir = wiki_dir / "raw"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = name.replace("/", "_").replace(" ", "_")
+    path = raw_dir / f"{safe_name}.md"
+    path.write_text(content)
+    return path
 
-    The source is fetched (URL or local path) and saved to the wiki's raw/ directory,
-    then the llm-wiki-agent /wiki-ingest skill processes it — extracting entities,
-    concepts, and cross-references into structured wiki pages.
+
+async def _fetch_url(url: str) -> tuple[str, str]:
+    """Fetch content from a URL, return (name, content)."""
+    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+    name = url.rstrip("/").split("/")[-1] or "webpage"
+    return name, resp.text
+
+
+@mcp.tool()
+async def ingest(wiki_name: str, source: str = "", content: str = "") -> str:
+    """Ingest content into a wiki knowledge base.
+
+    Supports three input modes:
+    - Local file path via `source`
+    - URL via `source` (starts with http:// or https://)
+    - Raw text via `content`
+
+    After saving, the llm-wiki-agent /wiki-ingest skill processes it — extracting
+    entities, concepts, and cross-references into structured wiki pages.
 
     Args:
         wiki_name: Name of the wiki to ingest into (created if it doesn't exist).
         source: A local file path or URL to ingest.
+        content: Raw text content to ingest. Used when source is empty.
     """
+    if not source and not content:
+        return "Error: provide either 'source' (file path or URL) or 'content' (raw text)."
+
     wiki_dir = Path(_cfg["wikis_root"]) / wiki_name
+
+    if source.startswith(("http://", "https://")):
+        name, text = await _fetch_url(source)
+        local_path = _save_raw(wiki_dir, name, text)
+        return await run_ingest(wiki_dir, str(local_path))
+
+    if content:
+        local_path = _save_raw(wiki_dir, f"{wiki_name}_raw", content)
+        return await run_ingest(wiki_dir, str(local_path))
+
     return await run_ingest(wiki_dir, source)
 
 
