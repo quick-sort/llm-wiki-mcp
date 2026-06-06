@@ -40,7 +40,24 @@ jobs:
         with:
           context: .
           push: true
+          platforms: linux/amd64
+          provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Delete old package versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSIONS=$(gh api "users/${{ github.repository_owner }}/packages/container/${{ github.event.repository.name }}/versions" --paginate --jq '.[].id')
+          COUNT=0
+          for id in $VERSIONS; do
+            COUNT=$((COUNT + 1))
+            if [ $COUNT -gt 1 ]; then
+              echo "Deleting version $id..."
+              gh api -X DELETE "users/${{ github.repository_owner }}/packages/container/${{ github.event.repository.name }}/versions/$id" || true
+            fi
+          done
+          echo "Kept 1 version, deleted $((COUNT - 1)) old versions."
