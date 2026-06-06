@@ -54,8 +54,7 @@ async def _run_agent(prompt: str, cwd: Path) -> str:
                 if isinstance(block, TextBlock):
                     text_parts.append(block.text)
         elif isinstance(message, ResultMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    text_parts.append(block.text)
+            if message.result:
+                text_parts.append(message.result)
 
     return "\n".join(text_parts) if text_parts else "No response from agent."
