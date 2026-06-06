@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import os
 from pathlib import Path
 
@@ -124,12 +125,33 @@ async def list_wikis() -> list[str]:
     )
 
 
+def _has_glob_pattern(path: str) -> bool:
+    return any(c in path for c in ("*", "?", "["))
+
+
+async def _ingest_file(wiki_dir: Path, file_path: str) -> str:
+    """Ingest a single local file into the wiki."""
+    p = Path(file_path)
+    if not p.exists():
+        return f"Error: file not found: {file_path}"
+
+    if p.suffix.lower() in _MARKDOWN_EXTENSIONS:
+        return await run_ingest(wiki_dir, file_path)
+
+    if p.suffix.lower() in _DOCUMENT_EXTENSIONS:
+        name, md_content = _convert_file(file_path)
+        local_path = _save_raw(wiki_dir, name, md_content)
+        return await run_ingest(wiki_dir, str(local_path))
+
+    return await run_ingest(wiki_dir, file_path)
+
+
 @mcp.tool()
 async def ingest(wiki_name: str, source: str = "", content: str = "") -> str:
     """Ingest content into a wiki knowledge base.
 
     Supports three input modes:
-    - Local file path via `source` (PDF, DOCX, PPTX, etc. auto-converted via markitdown)
+    - Local file path via `source` (glob patterns like * are expanded to match multiple files)
     - URL via `source` (starts with http:// or https://)
     - Raw text via `content`
 
@@ -138,7 +160,7 @@ async def ingest(wiki_name: str, source: str = "", content: str = "") -> str:
 
     Args:
         wiki_name: Name of the wiki to ingest into (created if it doesn't exist).
-        source: A local file path or URL to ingest.
+        source: A local file path (supports glob) or URL to ingest.
         content: Raw text content to ingest. Used when source is empty.
     """
     if not source and not content:
@@ -155,24 +177,19 @@ async def ingest(wiki_name: str, source: str = "", content: str = "") -> str:
         local_path = _save_raw(wiki_dir, f"{wiki_name}_raw", content)
         return await run_ingest(wiki_dir, str(local_path))
 
-    # Local file — convert non-markdown via markitdown
-    p = Path(source)
-    if not p.exists():
-        return f"Error: file not found: {source}"
+    # Local file path — expand glob if present
+    if _has_glob_pattern(source):
+        files = sorted(glob.glob(source))
+        if not files:
+            return f"Error: no files matched pattern: {source}"
+        results = []
+        for f in files:
+            if Path(f).is_dir():
+                continue
+            results.append(f"[{f}] {await _ingest_file(wiki_dir, f)}")
+        return f"Ingested {len(results)} file(s):\n" + "\n".join(results)
 
-    if p.suffix.lower() in _MARKDOWN_EXTENSIONS:
-        return await run_ingest(wiki_dir, source)
-
-    if p.suffix.lower() in _DOCUMENT_EXTENSIONS:
-        name, md_content = _convert_file(source)
-        local_path = _save_raw(wiki_dir, name, md_content)
-        return await run_ingest(wiki_dir, str(local_path))
-
-    return await run_ingest(wiki_dir, source)
-
-    name, md_content = _convert_file(source)
-    local_path = _save_raw(wiki_dir, name, md_content)
-    return await run_ingest(wiki_dir, str(local_path))
+    return await _ingest_file(wiki_dir, source)
 
 
 @mcp.tool()
