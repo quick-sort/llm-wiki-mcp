@@ -19,6 +19,7 @@ _cfg: dict = {
 }
 
 _MARKDOWN_EXTENSIONS = {".md", ".markdown", ".txt"}
+_DOCUMENT_EXTENSIONS = {".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".epub", ".odt", ".rtf", ".ipynb"}
 
 
 def _get_markitdown() -> MarkItDown:
@@ -59,11 +60,40 @@ def _convert_file(file_path: str) -> tuple[str, str]:
 
 
 async def _fetch_url(url: str) -> tuple[str, str]:
-    """Fetch content from a URL, return (name, content)."""
+    """Fetch content from a URL, convert to markdown.
+
+    - HTML pages → trafilatura (clean article extraction)
+    - PDF, DOCX, etc. → markitdown
+    - Plain text → as-is
+    """
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
         resp = await client.get(url)
         resp.raise_for_status()
-    name = url.rstrip("/").split("/")[-1] or "webpage"
+
+    filename = url.rstrip("/").split("/")[-1] or "webpage"
+    name = Path(filename).stem or "webpage"
+    suffix = Path(filename).suffix.lower()
+    content_type = resp.headers.get("content-type", "")
+
+    # Document file URLs — use markitdown
+    if suffix in _DOCUMENT_EXTENSIONS or "application/pdf" in content_type:
+        md = _get_markitdown()
+        result = md.convert(resp.content)
+        return name, result.text_content
+
+    # HTML pages — use trafilatura for clean extraction
+    if "text/html" in content_type or suffix in ("", ".html", ".htm"):
+        import trafilatura
+
+        extracted = trafilatura.extract(resp.text, include_links=True, include_tables=True)
+        if extracted:
+            return name, extracted
+        # Fallback: trafilatura couldn't extract, return raw text stripped of tags
+        import re
+        text = re.sub(r"<[^>]+>", "", resp.text)
+        return name, text[:50000]
+
+    # Plain text or anything else — return as-is
     return name, resp.text
 
 
@@ -132,6 +162,13 @@ async def ingest(wiki_name: str, source: str = "", content: str = "") -> str:
 
     if p.suffix.lower() in _MARKDOWN_EXTENSIONS:
         return await run_ingest(wiki_dir, source)
+
+    if p.suffix.lower() in _DOCUMENT_EXTENSIONS:
+        name, md_content = _convert_file(source)
+        local_path = _save_raw(wiki_dir, name, md_content)
+        return await run_ingest(wiki_dir, str(local_path))
+
+    return await run_ingest(wiki_dir, source)
 
     name, md_content = _convert_file(source)
     local_path = _save_raw(wiki_dir, name, md_content)
