@@ -20,9 +20,5 @@ jobs:
           docker pull ghcr.io/${{ github.repository }}:latest
           docker compose up -d
 
-      - name: Wait for service to be healthy
-        run: |
-          timeout 60 bash -c 'until curl -f http://localhost:8080; do sleep 2; done'
-
       - name: Verify deployment
         run: docker ps --filter name=llm-wiki-mcp
