@@ -2,11 +2,11 @@ FROM python:3.12-slim
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Install Node.js (required by Claude Code CLI) and gh CLI
+# Install Node.js (required by Claude Code CLI), gh CLI, and gosu
 ENV FNM_DIR="/opt/fnm"
 ENV PATH="/opt/fnm/aliases/default/bin:$PATH"
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates git wget unzip \
+        curl ca-certificates git wget unzip gosu \
     && curl -fsSL https://fnm.vercel.app/install | bash -s -- --install-dir /usr/local/bin --skip-shell \
     && fnm install 24 \
     && fnm default 24 \
@@ -49,7 +49,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 RUN chown -R agent:agent /app /home/agent
 
-USER agent
+COPY --chmod=755 entrypoint.sh /entrypoint.sh
+
+# Do NOT set USER here — entrypoint runs as root to fix volume permissions,
+# then drops to agent via gosu
 
 ENV UV_CACHE_DIR="/home/agent/.cache/uv"
 ENV PATH="/home/agent/.npm-global/bin:$PATH"
@@ -62,4 +65,5 @@ VOLUME /data
 
 EXPOSE 8080
 
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["uv", "run", "llm-wiki-mcp", "--wikis-root", "/data/wikis"]
