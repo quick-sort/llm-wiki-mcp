@@ -1,0 +1,20 @@
+services:
+  llm-wiki-mcp:
+    image: ghcr.io/quick-sort/llm-wiki-mcp:latest
+    container_name: llm-wiki-mcp
+    restart: unless-stopped
+    pull_policy: always
+    ports:
+      - "8080:8080"
+    volumes:
+      - wikis:/home/agent/wikis
+    environment:
+      ANTHROPIC_SMALL_FAST_MODEL: claude-haiku
+      ANTHROPIC_DEFAULT_SONNET_MODEL: claude-sonnet
+      ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku
+    env_file:
+      - .env
+
+volumes:
+  wikis:
