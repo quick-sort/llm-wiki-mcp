@@ -8,6 +8,7 @@ from pathlib import Path
 
 import httpx
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.server import TransportSecuritySettings
 from markitdown import MarkItDown
 
 from .agent import run_ingest, run_query
@@ -72,6 +73,9 @@ mcp = FastMCP(
         "A wiki knowledge base MCP server. Use 'ingest' to add documents (files, URLs, or raw text) "
         "to a named wiki, and 'query' to ask questions about the wiki's knowledge. "
         "Powered by llm-wiki-agent skills via Claude Agent SDK."
+    ),
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=False,
     ),
 )
 
