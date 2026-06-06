@@ -180,10 +180,10 @@ def main():
     _cfg["wikis_root"] = args.wikis_root
     Path(args.wikis_root).mkdir(parents=True, exist_ok=True)
 
-    if args.transport == "stdio":
-        mcp.run(transport="stdio")
-    else:
-        mcp.run(transport="streamable-http", host=args.host, port=args.port)
+    mcp.settings.host = args.host
+    mcp.settings.port = args.port
+
+    mcp.run(transport=args.transport)
 
 
 if __name__ == "__main__":
