@@ -14,17 +14,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Pull latest image
-        run: |
-          docker pull ghcr.io/${{ github.repository }}:latest
-
-      - name: Copy .env file
+      - name: Deploy with Docker Compose
         run: |
           cp ~/llm-wiki-mcp-runner/.env .env
-
-      - name: Start with docker-compose
-        run: |
-          docker-compose up -d
+          docker pull ghcr.io/${{ github.repository }}:latest
+          docker compose up -d
 
       - name: Wait for service to be healthy
         run: |
