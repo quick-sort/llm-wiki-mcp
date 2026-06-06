@@ -49,13 +49,22 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 RUN chown -R agent:agent /app /home/agent
 
+# Initialize Claude Code configuration files
+RUN mkdir -p /home/agent/.claude \
+    && echo '{"hasCompletedOnboarding":true}' > /home/agent/.claude.json \
+    && echo '{"skipWebFetchPreflight":true}' > /home/agent/.claude/settings.json \
+    && chown -R agent:agent /home/agent/.claude /home/agent/.claude.json /home/agent/.claude/settings.json
+
 USER agent
 
 ENV UV_CACHE_DIR="/home/agent/.cache/uv"
 ENV PATH="/home/agent/.npm-global/bin:$PATH"
 ENV ANTHROPIC_API_KEY=""
 ENV ANTHROPIC_BASE_URL=""
-ENV ANTHROPIC_MODEL=""
+ENV ANTHROPIC_SMALL_FAST_MODEL=""
+ENV ANTHROPIC_DEFAULT_SONNET_MODEL=""
+ENV ANTHROPIC_DEFAULT_OPUS_MODEL=""
+ENV ANTHROPIC_DEFAULT_HAIKU_MODEL=""
 ENV LLM_WIKI_ROOT=/home/agent/wikis
 
 EXPOSE 8080

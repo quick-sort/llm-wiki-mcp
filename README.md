@@ -60,5 +60,20 @@ query(wiki_name="my-research", question="What are the main approaches to attenti
 
 ```bash
 docker build -t llm-wiki-mcp .
-docker run -e ANTHROPIC_API_KEY=sk-ant-... -p 8080:8080 -v ./wikis:/data/wikis llm-wiki-mcp
+docker run -e ANTHROPIC_API_KEY=sk-ant-... -p 8080:8080 -v ./wikis:/home/agent/wikis llm-wiki-mcp
+```
+
+Optional: configure custom base URL or models:
+
+```bash
+docker run \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
+  -e ANTHROPIC_BASE_URL=https://custom.anthropic.com \
+  -e ANTHROPIC_SMALL_FAST_MODEL=claude-haiku-4-20250514 \
+  -e ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-4-20250514 \
+  -e ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-20250514 \
+  -e ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-haiku-4-20250514 \
+  -p 8080:8080 \
+  -v ./wikis:/home/agent/wikis \
+  llm-wiki-mcp
 ```

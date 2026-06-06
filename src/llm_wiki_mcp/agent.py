@@ -31,19 +31,11 @@ async def _run_agent(prompt: str, cwd: Path) -> str:
     """Run a Claude Agent SDK session with llm-wiki-agent skills."""
     cwd.mkdir(parents=True, exist_ok=True)
 
-    env: dict[str, str] = {}
-    if api_key := os.environ.get("ANTHROPIC_API_KEY"):
-        env["ANTHROPIC_API_KEY"] = api_key
-    if base_url := os.environ.get("ANTHROPIC_BASE_URL"):
-        env["ANTHROPIC_BASE_URL"] = base_url
-
     options = ClaudeAgentOptions(
         cwd=str(cwd),
-        model=os.environ.get("ANTHROPIC_MODEL"),
         allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
         permission_mode="acceptEdits",
         skills="all",
-        env=env,
         add_dirs=[str(SKILLS_DIR)],
     )
 
