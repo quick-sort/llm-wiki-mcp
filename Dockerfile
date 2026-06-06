@@ -56,10 +56,8 @@ ENV PATH="/home/agent/.npm-global/bin:$PATH"
 ENV ANTHROPIC_API_KEY=""
 ENV ANTHROPIC_BASE_URL=""
 ENV ANTHROPIC_MODEL=""
-ENV LLM_WIKI_ROOT=/data/wikis
-
-VOLUME /data
+ENV LLM_WIKI_ROOT=/home/agent/wikis
 
 EXPOSE 8080
 
-CMD ["uv", "run", "llm-wiki-mcp", "--wikis-root", "/data/wikis"]
+CMD ["uv", "run", "llm-wiki-mcp", "--wikis-root", "/home/agent/wikis"]
