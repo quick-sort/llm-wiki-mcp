@@ -29,7 +29,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN git clone --depth 1 https://github.com/SamurAIGPT/llm-wiki-agent.git /app/skills/llm-wiki-agent \
     && chown -R agent:agent /app/skills
 
-VOLUME ["/home/agent"]
+VOLUME ["/home/agent/wikis"]
 
 WORKDIR /app
 ENV UV_LINK_MODE=copy
