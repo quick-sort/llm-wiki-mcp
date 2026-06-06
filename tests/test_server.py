@@ -547,3 +547,104 @@ class TestGetMarkItDown:
         with patch.dict(os.environ, env, clear=True):
             md = _get_markitdown()
             assert md._llm_client is None
+
+
+# ---------------------------------------------------------------------------
+# _has_glob_pattern
+# ---------------------------------------------------------------------------
+class TestHasGlobPattern:
+    def test_star_is_glob(self):
+        from llm_wiki_mcp.server import _has_glob_pattern
+
+        assert _has_glob_pattern("*.pdf") is True
+        assert _has_glob_pattern("/path/to/*.md") is True
+
+    def test_question_mark_is_glob(self):
+        from llm_wiki_mcp.server import _has_glob_pattern
+
+        assert _has_glob_pattern("file?.txt") is True
+
+    def test_bracket_is_glob(self):
+        from llm_wiki_mcp.server import _has_glob_pattern
+
+        assert _has_glob_pattern("file[0-9].txt") is True
+
+    def test_plain_path_is_not_glob(self):
+        from llm_wiki_mcp.server import _has_glob_pattern
+
+        assert _has_glob_pattern("/path/to/file.pdf") is False
+        assert _has_glob_pattern("file.txt") is False
+
+
+# ---------------------------------------------------------------------------
+# ingest — glob expansion
+# ---------------------------------------------------------------------------
+class TestIngestGlob:
+    @pytest.mark.anyio
+    async def test_glob_matches_multiple_files(self, tmp_path: Path):
+        from llm_wiki_mcp.server import ingest, _cfg
+
+        _cfg["wikis_root"] = str(tmp_path / "wikis")
+
+        (tmp_path / "a.txt").write_text("aaa")
+        (tmp_path / "b.txt").write_text("bbb")
+        (tmp_path / "c.pdf").write_text("not a real pdf")
+
+        with patch("llm_wiki_mcp.server.run_ingest", new_callable=AsyncMock, return_value="ok"):
+            result = await ingest(
+                wiki_name="test",
+                source=str(tmp_path / "*.txt"),
+            )
+
+        assert "Ingested 2 file(s)" in result
+        assert "a.txt" in result
+        assert "b.txt" in result
+        assert "c.pdf" not in result
+
+    @pytest.mark.anyio
+    async def test_glob_no_match_returns_error(self, tmp_path: Path):
+        from llm_wiki_mcp.server import ingest, _cfg
+
+        _cfg["wikis_root"] = str(tmp_path / "wikis")
+
+        result = await ingest(
+            wiki_name="test",
+            source=str(tmp_path / "*.nonexistent"),
+        )
+
+        assert "Error" in result
+        assert "no files matched" in result
+
+    @pytest.mark.anyio
+    async def test_glob_skips_directories(self, tmp_path: Path):
+        from llm_wiki_mcp.server import ingest, _cfg
+
+        _cfg["wikis_root"] = str(tmp_path / "wikis")
+
+        (tmp_path / "a.txt").write_text("aaa")
+        (tmp_path / "subdir").mkdir()
+
+        with patch("llm_wiki_mcp.server.run_ingest", new_callable=AsyncMock, return_value="ok"):
+            result = await ingest(
+                wiki_name="test",
+                source=str(tmp_path / "*"),
+            )
+
+        assert "Ingested 1 file(s)" in result
+
+    @pytest.mark.anyio
+    async def test_plain_path_still_works(self, tmp_path: Path):
+        from llm_wiki_mcp.server import ingest, _cfg
+
+        _cfg["wikis_root"] = str(tmp_path / "wikis")
+
+        f = tmp_path / "single.txt"
+        f.write_text("hello")
+
+        with patch("llm_wiki_mcp.server.run_ingest", new_callable=AsyncMock, return_value="ok"):
+            result = await ingest(
+                wiki_name="test",
+                source=str(f),
+            )
+
+        assert "ok" == result
