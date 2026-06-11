@@ -14,7 +14,7 @@ from claude_agent_sdk.types import (
 )
 
 # Skill source — llm-wiki-agent cloned into skills/ at deploy time
-SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills" / "llm-wiki-agent"
+SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills" / "llm-wiki-agent"
 
 
 async def run_ingest(wiki_workdir: Path, source: str) -> str:
