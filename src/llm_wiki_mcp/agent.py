@@ -14,7 +14,7 @@ from claude_agent_sdk.types import (
 )
 
 # Skill source — llm-wiki-agent cloned into skills/ at deploy time
-SKILLS_DIR = Path(__file__).resolve().parents[3] / "skills" / "llm-wiki-agent"
+SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills" / "llm-wiki-agent"
 
 
 async def run_ingest(wiki_workdir: Path, source: str) -> str:
@@ -29,14 +29,23 @@ async def run_query(wiki_workdir: Path, question: str) -> str:
 
 async def _run_agent(prompt: str, cwd: Path) -> str:
     """Run a Claude Agent SDK session with llm-wiki-agent skills."""
+    import shutil
     cwd.mkdir(parents=True, exist_ok=True)
+
+    # 把 llm-wiki-agent 的命令文件复制到工作目录，让 Claude Code 能发现
+    commands_src = SKILLS_DIR / ".claude" / "commands"
+    commands_dst = cwd / ".claude" / "commands"
+    if commands_src.exists():
+        commands_dst.mkdir(parents=True, exist_ok=True)
+        for f in commands_src.glob("*.md"):
+            shutil.copy(f, commands_dst / f.name)
 
     options = ClaudeAgentOptions(
         cwd=str(cwd),
         allowed_tools=["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
         permission_mode="acceptEdits",
         skills="all",
-        add_dirs=[str(SKILLS_DIR)],
+        plugins=[{"type": "local", "path": str(SKILLS_DIR)}],
     )
 
     text_parts: list[str] = []
