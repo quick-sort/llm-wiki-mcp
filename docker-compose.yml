@@ -16,5 +16,15 @@ services:
     env_file:
       - .env
 
+  sftp:
+    image: atmoz/sftp
+    container_name: llm-wiki-sftp
+    restart: unless-stopped
+    ports:
+      - "2222:22"
+    volumes:
+      - wikis:/home/wikiuser/wikis
+    command: wikiuser:${SFTP_PASSWORD}:1001
+
 volumes:
   wikis:
