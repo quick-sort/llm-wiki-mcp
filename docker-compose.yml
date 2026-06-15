@@ -13,18 +13,10 @@ services:
       ANTHROPIC_DEFAULT_SONNET_MODEL: claude-sonnet
       ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus
       ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku
+      MCP_ADMIN_KEY: ${MCP_ADMIN_KEY}
+      MCP_QUERY_KEY: ${MCP_QUERY_KEY}
     env_file:
       - .env
-
-  sftp:
-    image: atmoz/sftp
-    container_name: llm-wiki-sftp
-    restart: unless-stopped
-    ports:
-      - "2222:22"
-    volumes:
-      - wikis:/home/wikiuser/wikis
-    command: wikiuser:${SFTP_PASSWORD}:1001
 
 volumes:
   wikis:
