@@ -110,7 +110,7 @@ def _diff_snapshot(before: dict, after: dict) -> dict:
 def _update_pages_meta(wiki_dir: Path, source_name: str, affected: dict):
     """更新 .meta/pages.json，记录原始文件与 wiki 页面的关系"""
     meta_dir = wiki_dir / ".meta"
-    meta_dir.mkdir(exist_ok=True)
+    meta_dir.mkdir(parents=True, exist_ok=True)
     meta_file = meta_dir / "pages.json"
 
     if meta_file.exists():
