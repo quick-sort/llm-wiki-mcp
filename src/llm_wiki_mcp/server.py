@@ -27,7 +27,7 @@ _DOCUMENT_EXTENSIONS = {".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls
 
 # 权限分组
 _QUERY_TOOLS = {"list_wikis", "query"}
-_ADMIN_TOOLS = {"list_wikis", "query", "ingest", "list_sources", "delete_source", "update_source"}
+_ADMIN_TOOLS = {"list_wikis", "query", "ingest", "list_sources", "delete_source", "update_source", "list_raw_files"}
 
 
 def _get_markitdown() -> MarkItDown:
@@ -186,7 +186,13 @@ async def _ingest_file(wiki_dir: Path, file_path: str) -> str:
         return f"Error: file not found: {file_path}"
 
     if p.suffix.lower() in _MARKDOWN_EXTENSIONS:
-        return await run_ingest(wiki_dir, file_path)
+        import shutil
+        raw_dir = wiki_dir / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True)
+        local_path = raw_dir / p.name
+        if local_path.resolve() != p.resolve():
+            shutil.copy(file_path, local_path)
+        return await run_ingest(wiki_dir, str(local_path))
 
     if p.suffix.lower() in _DOCUMENT_EXTENSIONS:
         name, md_content = _convert_file(file_path)
@@ -287,6 +293,60 @@ async def list_sources(wiki_name: str) -> dict:
     sources = sorted(all_sources)
     return {"sources": sources, "count": len(sources)}
 
+@mcp.tool()
+async def list_raw_files(wiki_name: str) -> dict:
+    """列出 raw 目录下所有文件，并按 ingest 状态分类。
+
+    用于发现通过 sftp 等方式上传但尚未 ingest 的文件。
+
+    Args:
+        wiki_name: wiki 名称。
+
+    Returns:
+        {
+            "all": ["raw/文件A.md", "raw/文件B.md", ...],
+            "ingested": ["raw/文件A.md"],
+            "not_ingested": ["raw/文件B.md"],
+            "count": {"all": 2, "ingested": 1, "not_ingested": 1}
+        }
+    """
+    wiki_dir = Path(_cfg["wikis_root"]) / wiki_name
+    raw_dir = wiki_dir / "raw"
+
+    if not wiki_dir.exists():
+        return {"error": f"Wiki '{wiki_name}' 不存在"}
+
+    if not raw_dir.exists():
+        return {"all": [], "ingested": [], "not_ingested": [], "count": {"all": 0, "ingested": 0, "not_ingested": 0}}
+
+    # 扫描 raw 目录下所有文件
+    all_files = sorted(
+        f"raw/{f.name}" for f in raw_dir.iterdir() if f.is_file()
+    )
+
+    # 读取 pages.json，收集已 ingest 的来源文件
+    ingested_set = set()
+    meta_file = wiki_dir / ".meta" / "pages.json"
+    if meta_file.exists():
+        with open(meta_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for page_info in data.values():
+            for source in page_info.get("sources", []):
+                ingested_set.add(source)
+
+    ingested = [f for f in all_files if f in ingested_set]
+    not_ingested = [f for f in all_files if f not in ingested_set]
+
+    return {
+        "all": all_files,
+        "ingested": ingested,
+        "not_ingested": not_ingested,
+        "count": {
+            "all": len(all_files),
+            "ingested": len(ingested),
+            "not_ingested": len(not_ingested),
+        },
+    }
 
 @mcp.tool()
 async def delete_source(wiki_name: str, source_name: str) -> dict:
