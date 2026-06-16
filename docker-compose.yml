@@ -13,6 +13,8 @@ services:
       ANTHROPIC_DEFAULT_SONNET_MODEL: claude-sonnet
       ANTHROPIC_DEFAULT_OPUS_MODEL: claude-opus
       ANTHROPIC_DEFAULT_HAIKU_MODEL: claude-haiku
+      MCP_ADMIN_KEY: ${MCP_ADMIN_KEY}
+      MCP_QUERY_KEY: ${MCP_QUERY_KEY}
     env_file:
       - .env
 
