@@ -319,9 +319,9 @@ async def list_raw_files(wiki_name: str) -> dict:
     if not raw_dir.exists():
         return {"all": [], "ingested": [], "not_ingested": [], "count": {"all": 0, "ingested": 0, "not_ingested": 0}}
 
-    # 扫描 raw 目录下所有文件
+    # 扫描 raw 目录下所有文件（递归扫描子目录）
     all_files = sorted(
-        f"raw/{f.name}" for f in raw_dir.iterdir() if f.is_file()
+        f"raw/{f.relative_to(raw_dir)}" for f in raw_dir.rglob("*") if f.is_file()
     )
 
     # 读取 pages.json，收集已 ingest 的来源文件
