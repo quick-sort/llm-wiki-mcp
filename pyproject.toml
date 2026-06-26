@@ -12,6 +12,7 @@ dependencies = [
     "openai>=1.0.0",
     "trafilatura>=2.0.0",
     "uvicorn>=0.49.0",
+    "fastapi>=0.138.1",
 ]
 
 [dependency-groups]
@@ -27,4 +28,4 @@ package = true
 url = "https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple/"
 
 [project.scripts]
-llm-wiki-mcp = "llm_wiki_mcp.server:main"
+llm-wiki-agent = "llm_wiki_mcp.server:main"

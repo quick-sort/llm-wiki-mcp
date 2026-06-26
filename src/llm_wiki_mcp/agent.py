@@ -49,13 +49,19 @@ async def _run_agent(prompt: str, cwd: Path) -> str:
     )
 
     text_parts: list[str] = []
-    async for message in query(prompt=prompt, options=options):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    text_parts.append(block.text)
-        elif isinstance(message, ResultMessage):
-            if message.result:
-                text_parts.append(message.result)
+    try:
+        async for message in query(prompt=prompt, options=options):
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        text_parts.append(block.text)
+            elif isinstance(message, ResultMessage):
+                if message.result:
+                    text_parts.append(message.result)
+    except Exception as e:
+        if "success" in str(e).lower() and text_parts:
+            pass  # 实际执行成功，忽略此错误
+        else:
+            raise
 
     return "\n".join(text_parts) if text_parts else "No response from agent."

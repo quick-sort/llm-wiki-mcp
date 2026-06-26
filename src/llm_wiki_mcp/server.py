@@ -1,34 +1,61 @@
-"""HTTP MCP server for llm-wiki-agent — provides query and ingest tools."""
+"""llm-wiki: OpenAI 兼容的 wiki Agent 服务 + 知识库管理 API。
+
+接口：
+- GET  /v1/models                     返回可用模型列表
+- POST /v1/chat/completions           wiki 问答（流式/非流式）
+- POST /api/ingest                    注入文件到 wiki
+- GET  /api/wikis                     列出所有 wiki
+- GET  /api/wikis/{name}/sources      列出已 ingest 的文件
+- GET  /api/wikis/{name}/raw_files    列出 raw 文件及 ingest 状态
+- DELETE /api/wikis/{name}/sources/{source_name}  删除来源
+- PUT /api/wikis/{name}/sources/{source_name}     更新来源
+"""
 
 from __future__ import annotations
 
-import argparse
 import glob
 import json
 import os
+import shutil
+import time
+import uuid
 from datetime import date
 from pathlib import Path
+from typing import AsyncIterator
 
 import httpx
-import uvicorn
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.server import TransportSecuritySettings
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
 from markitdown import MarkItDown
+from pydantic import BaseModel
 
 from .agent import run_ingest, run_query
 
-# Mutable config — use _cfg["wikis_root"] everywhere
-_cfg: dict = {
-    "wikis_root": os.environ.get("LLM_WIKI_ROOT", str(Path.cwd() / "wikis")),
-}
+app = FastAPI(title="llm-wiki-agent")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── 配置 ──────────────────────────────────────────────────────────────────────
+
+def get_cfg() -> dict:
+    return {
+        "wikis_root": os.environ.get("LLM_WIKI_ROOT", str(Path.cwd() / "wikis")),
+        "api_key": os.environ.get("ANTHROPIC_API_KEY", ""),
+        "base_url": os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com"),
+        "wiki_name": os.environ.get("LLM_WIKI_NAME", "reagle"),
+    }
 
 _MARKDOWN_EXTENSIONS = {".md", ".markdown", ".txt"}
 _DOCUMENT_EXTENSIONS = {".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".epub", ".odt", ".rtf", ".ipynb"}
 
-# 权限分组
-_QUERY_TOOLS = {"list_wikis", "query"}
-_ADMIN_TOOLS = {"list_wikis", "query", "ingest", "list_sources", "delete_source", "update_source", "list_raw_files"}
 
+# ── 工具函数（复用自 llm-wiki-mcp）──────────────────────────────────────────
 
 def _get_markitdown() -> MarkItDown:
     api_key = os.environ.get("OPENAI_API_KEY")
@@ -86,7 +113,6 @@ async def _fetch_url(url: str) -> tuple[str, str]:
 
 
 async def _snapshot_wiki(wiki_dir: Path) -> dict:
-    """记录当前 wiki 目录下所有文件的路径和修改时间"""
     snapshot = {}
     wiki_path = wiki_dir / "wiki"
     if wiki_path.exists():
@@ -96,9 +122,7 @@ async def _snapshot_wiki(wiki_dir: Path) -> dict:
 
 
 def _diff_snapshot(before: dict, after: dict) -> dict:
-    """对比快照，返回新增和修改的文件"""
-    created = []
-    updated = []
+    created, updated = [], []
     for path, mtime in after.items():
         if path not in before:
             created.append(path)
@@ -108,7 +132,6 @@ def _diff_snapshot(before: dict, after: dict) -> dict:
 
 
 def _update_pages_meta(wiki_dir: Path, source_name: str, affected: dict):
-    """更新 .meta/pages.json，记录原始文件与 wiki 页面的关系"""
     meta_dir = wiki_dir / ".meta"
     meta_dir.mkdir(parents=True, exist_ok=True)
     meta_file = meta_dir / "pages.json"
@@ -119,8 +142,7 @@ def _update_pages_meta(wiki_dir: Path, source_name: str, affected: dict):
     else:
         data = {}
 
-    all_pages = affected["created"] + affected["updated"]
-    for page in all_pages:
+    for page in affected["created"] + affected["updated"]:
         if page not in data:
             data[page] = {"sources": [], "last_updated": ""}
         if source_name not in data[page]["sources"]:
@@ -131,62 +153,16 @@ def _update_pages_meta(wiki_dir: Path, source_name: str, affected: dict):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-mcp = FastMCP(
-    "llm-wiki-mcp",
-    instructions=(
-        "A wiki knowledge base MCP server. Use 'ingest' to add documents (files, URLs, or raw text) "
-        "to a named wiki, and 'query' to ask questions about the wiki's knowledge. "
-        "Powered by llm-wiki-agent skills via Claude Agent SDK."
-    ),
-    transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=False,
-    ),
-)
-
-
-@mcp.tool()
-async def list_wikis() -> list[str]:
-    """List all wiki names.
-
-    Returns a list of wiki names found in the wikis root directory.
-    """
-    wikis_root = Path(_cfg["wikis_root"])
-    if not wikis_root.exists():
-        return []
-    return sorted(
-        d.name for d in wikis_root.iterdir() if d.is_dir() and not d.name.startswith(".")
-    )
-
-
-@mcp.tool()
-async def query(wiki_name: str, question: str) -> str:
-    """Query a wiki knowledge base and get an AI-synthesized answer.
-
-    Uses the llm-wiki-agent /wiki-query skill to search wiki pages and
-    synthesize a comprehensive answer with [[wikilinks]] citations.
-
-    Args:
-        wiki_name: Name of the wiki to query.
-        question: The question to ask about the wiki's knowledge.
-    """
-    wiki_dir = Path(_cfg["wikis_root"]) / wiki_name
-    if not wiki_dir.exists():
-        return f"Wiki '{wiki_name}' does not exist. Create it by ingesting a document first."
-    return await run_query(wiki_dir, question)
-
-
 def _has_glob_pattern(path: str) -> bool:
     return any(c in path for c in ("*", "?", "["))
 
 
 async def _ingest_file(wiki_dir: Path, file_path: str) -> str:
-    """Ingest a single local file into the wiki."""
     p = Path(file_path)
     if not p.exists():
         return f"Error: file not found: {file_path}"
 
     if p.suffix.lower() in _MARKDOWN_EXTENSIONS:
-        import shutil
         raw_dir = wiki_dir / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True)
         local_path = raw_dir / p.name
@@ -202,83 +178,191 @@ async def _ingest_file(wiki_dir: Path, file_path: str) -> str:
     return await run_ingest(wiki_dir, file_path)
 
 
-@mcp.tool()
-async def ingest(wiki_name: str, source: str = "", content: str = "") -> str:
-    """Ingest content into a wiki knowledge base.
+# ── Pydantic 模型 ─────────────────────────────────────────────────────────────
 
-    Supports three input modes:
-    - Local file path via `source` (glob patterns like * are expanded to match multiple files)
-    - URL via `source` (starts with http:// or https://)
-    - Raw text via `content`
+class Message(BaseModel):
+    role: str
+    content: str
 
-    After saving, the llm-wiki-agent /wiki-ingest skill processes it — extracting
-    entities, concepts, and cross-references into structured wiki pages.
 
-    Args:
-        wiki_name: Name of the wiki to ingest into (created if it doesn't exist).
-        source: A local file path (supports glob) or URL to ingest.
-        content: Raw text content to ingest. Used when source is empty.
-    """
-    if not source and not content:
-        return "Error: provide either 'source' (file path or URL) or 'content' (raw text)."
+class ChatCompletionRequest(BaseModel):
+    model: str = "llm-wiki-agent"
+    messages: list[Message]
+    stream: bool = False
+    temperature: float = 0.7
+    max_tokens: int = 4096
 
-    wiki_dir = Path(_cfg["wikis_root"]) / wiki_name
+
+class IngestRequest(BaseModel):
+    wiki_name: str
+    source: str = ""
+    content: str = ""
+
+
+class UpdateSourceRequest(BaseModel):
+    new_source: str = ""
+    new_content: str = ""
+
+
+# ── OpenAI 兼容接口 ───────────────────────────────────────────────────────────
+
+@app.get("/v1/models")
+async def list_models():
+    cfg = get_cfg()
+    return {
+        "object": "list",
+        "data": [
+            {
+                "id": "llm-wiki-agent",
+                "object": "model",
+                "created": int(time.time()),
+                "owned_by": "llm-wiki-agent",
+                "description": f"Wiki 知识库问答助手（基于 {cfg['wiki_name']} wiki）",
+            }
+        ],
+    }
+
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: ChatCompletionRequest):
+    cfg = get_cfg()
+
+    # 取最后一条 user 消息作为问题
+    question = ""
+    for msg in reversed(request.messages):
+        if msg.role == "user":
+            question = msg.content
+            break
+
+    if not question:
+        raise HTTPException(status_code=400, detail="No user message found")
+
+    wiki_dir = Path(cfg["wikis_root"]) / cfg["wiki_name"]
+    if not wiki_dir.exists():
+        raise HTTPException(status_code=500, detail=f"Wiki '{cfg['wiki_name']}' 不存在")
+
+    completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+    created = int(time.time())
+
+    if request.stream:
+        return StreamingResponse(
+            _stream_query(wiki_dir, question, completion_id, created),
+            media_type="text/event-stream",
+        )
+    else:
+        result = await run_query(wiki_dir, question)
+        return JSONResponse({
+            "id": completion_id,
+            "object": "chat.completion",
+            "created": created,
+            "model": "llm-wiki-agent",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": result},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        })
+
+
+async def _stream_query(
+    wiki_dir: Path, question: str, completion_id: str, created: int
+) -> AsyncIterator[str]:
+    """流式返回 run_query 结果（run_query 本身不流式，这里分块发送）"""
+    result = await run_query(wiki_dir, question)
+
+    # 按字符分块流式发送
+    chunk_size = 10
+    for i in range(0, len(result), chunk_size):
+        chunk_text = result[i:i + chunk_size]
+        chunk = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": "llm-wiki-agent",
+            "choices": [{"index": 0, "delta": {"content": chunk_text}, "finish_reason": None}],
+        }
+        yield f"data: {json.dumps(chunk)}\n\n"
+
+    # 结束
+    end_chunk = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": "llm-wiki-agent",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+    }
+    yield f"data: {json.dumps(end_chunk)}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+# ── 知识库管理 API ────────────────────────────────────────────────────────────
+
+@app.get("/api/wikis")
+async def list_wikis_api():
+    cfg = get_cfg()
+    wikis_root = Path(cfg["wikis_root"])
+    if not wikis_root.exists():
+        return {"wikis": []}
+    return {"wikis": sorted(d.name for d in wikis_root.iterdir() if d.is_dir() and not d.name.startswith("."))}
+
+
+@app.post("/api/ingest")
+async def ingest_api(req: IngestRequest):
+    cfg = get_cfg()
+    wiki_dir = Path(cfg["wikis_root"]) / req.wiki_name
     before = await _snapshot_wiki(wiki_dir)
     result = ""
     source_name = ""
 
-    if source.startswith(("http://", "https://")):
-        name, text = await _fetch_url(source)
+    if not req.source and not req.content:
+        raise HTTPException(status_code=400, detail="请提供 source 或 content")
+
+    if req.source.startswith(("http://", "https://")):
+        name, text = await _fetch_url(req.source)
         local_path = _save_raw(wiki_dir, name, text)
         source_name = f"raw/{local_path.name}"
         result = await run_ingest(wiki_dir, str(local_path))
-
-    elif content:
-        local_path = _save_raw(wiki_dir, f"{wiki_name}_raw", content)
+    elif req.content:
+        local_path = _save_raw(wiki_dir, f"{req.wiki_name}_raw", req.content)
         source_name = f"raw/{local_path.name}"
         result = await run_ingest(wiki_dir, str(local_path))
-
-    elif _has_glob_pattern(source):
-        files = sorted(glob.glob(source))
+    elif _has_glob_pattern(req.source):
+        files = sorted(glob.glob(req.source))
         if not files:
-            return f"Error: no files matched pattern: {source}"
+            raise HTTPException(status_code=400, detail=f"No files matched: {req.source}")
         results = []
         for f in files:
             if Path(f).is_dir():
                 continue
-            file_before = await _snapshot_wiki(wiki_dir)
-            file_result = await _ingest_file(wiki_dir, f)
-            file_after = await _snapshot_wiki(wiki_dir)
-            affected = _diff_snapshot(file_before, file_after)
-            _update_pages_meta(wiki_dir, f"raw/{Path(f).name}", affected)
-            results.append(f"[{f}] {file_result}")
-        return f"Ingested {len(results)} file(s):\n" + "\n".join(results)
-
+            fb = await _snapshot_wiki(wiki_dir)
+            fr = await _ingest_file(wiki_dir, f)
+            fa = await _snapshot_wiki(wiki_dir)
+            _update_pages_meta(wiki_dir, f"raw/{Path(f).name}", _diff_snapshot(fb, fa))
+            results.append(f)
+        return {"ingested": results, "count": len(results)}
     else:
-        source_name = f"raw/{Path(source).name}"
-        result = await _ingest_file(wiki_dir, source)
+        source_name = f"raw/{Path(req.source).name}"
+        result = await _ingest_file(wiki_dir, req.source)
 
     after = await _snapshot_wiki(wiki_dir)
     affected = _diff_snapshot(before, after)
     if affected["created"] or affected["updated"]:
         _update_pages_meta(wiki_dir, source_name, affected)
 
-    return result
+    return {"result": result, "source": source_name}
 
 
-@mcp.tool()
-async def list_sources(wiki_name: str) -> dict:
-    """列出指定 wiki 中已经 ingest 过的所有原始文件。
-
-    Args:
-        wiki_name: wiki 名称。
-    """
-    wiki_dir = Path(_cfg["wikis_root"]) / wiki_name
+@app.get("/api/wikis/{wiki_name}/sources")
+async def list_sources_api(wiki_name: str):
+    cfg = get_cfg()
+    wiki_dir = Path(cfg["wikis_root"]) / wiki_name
     meta_file = wiki_dir / ".meta" / "pages.json"
 
     if not wiki_dir.exists():
-        return {"error": f"Wiki '{wiki_name}' 不存在"}
-
+        raise HTTPException(status_code=404, detail=f"Wiki '{wiki_name}' 不存在")
     if not meta_file.exists():
         return {"sources": [], "count": 0}
 
@@ -293,38 +377,20 @@ async def list_sources(wiki_name: str) -> dict:
     sources = sorted(all_sources)
     return {"sources": sources, "count": len(sources)}
 
-@mcp.tool()
-async def list_raw_files(wiki_name: str) -> dict:
-    """列出 raw 目录下所有文件，并按 ingest 状态分类。
 
-    用于发现通过 sftp 等方式上传但尚未 ingest 的文件。
-
-    Args:
-        wiki_name: wiki 名称。
-
-    Returns:
-        {
-            "all": ["raw/文件A.md", "raw/文件B.md", ...],
-            "ingested": ["raw/文件A.md"],
-            "not_ingested": ["raw/文件B.md"],
-            "count": {"all": 2, "ingested": 1, "not_ingested": 1}
-        }
-    """
-    wiki_dir = Path(_cfg["wikis_root"]) / wiki_name
+@app.get("/api/wikis/{wiki_name}/raw_files")
+async def list_raw_files_api(wiki_name: str):
+    cfg = get_cfg()
+    wiki_dir = Path(cfg["wikis_root"]) / wiki_name
     raw_dir = wiki_dir / "raw"
 
     if not wiki_dir.exists():
-        return {"error": f"Wiki '{wiki_name}' 不存在"}
-
+        raise HTTPException(status_code=404, detail=f"Wiki '{wiki_name}' 不存在")
     if not raw_dir.exists():
         return {"all": [], "ingested": [], "not_ingested": [], "count": {"all": 0, "ingested": 0, "not_ingested": 0}}
 
-    # 扫描 raw 目录下所有文件（递归扫描子目录）
-    all_files = sorted(
-        f"raw/{f.relative_to(raw_dir)}" for f in raw_dir.rglob("*") if f.is_file()
-    )
+    all_files = sorted(f"raw/{f.relative_to(raw_dir)}" for f in raw_dir.rglob("*") if f.is_file())
 
-    # 读取 pages.json，收集已 ingest 的来源文件
     ingested_set = set()
     meta_file = wiki_dir / ".meta" / "pages.json"
     if meta_file.exists():
@@ -341,39 +407,25 @@ async def list_raw_files(wiki_name: str) -> dict:
         "all": all_files,
         "ingested": ingested,
         "not_ingested": not_ingested,
-        "count": {
-            "all": len(all_files),
-            "ingested": len(ingested),
-            "not_ingested": len(not_ingested),
-        },
+        "count": {"all": len(all_files), "ingested": len(ingested), "not_ingested": len(not_ingested)},
     }
 
-@mcp.tool()
-async def delete_source(wiki_name: str, source_name: str) -> dict:
-    """删除一个已 ingest 的原始文件，并自动处理相关 wiki 页面。
 
-    - 如果某个 wiki 页面只有这一个来源 → 直接删除该页面
-    - 如果某个 wiki 页面有多个来源 → 保留页面，从 sources 里移除该文件
-
-    Args:
-        wiki_name: wiki 名称。
-        source_name: 原始文件名，格式如 "raw/锐鹰传感产品总览.md"
-    """
-    wiki_dir = Path(_cfg["wikis_root"]) / wiki_name
+@app.delete("/api/wikis/{wiki_name}/sources/{source_name:path}")
+async def delete_source_api(wiki_name: str, source_name: str):
+    cfg = get_cfg()
+    wiki_dir = Path(cfg["wikis_root"]) / wiki_name
     meta_file = wiki_dir / ".meta" / "pages.json"
 
     if not wiki_dir.exists():
-        return {"error": f"Wiki '{wiki_name}' 不存在"}
-
+        raise HTTPException(status_code=404, detail=f"Wiki '{wiki_name}' 不存在")
     if not meta_file.exists():
-        return {"error": "没有找到 pages.json，请先 ingest 文件"}
+        raise HTTPException(status_code=404, detail="没有找到 pages.json")
 
     with open(meta_file, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    deleted_pages = []
-    updated_pages = []
-
+    deleted_pages, updated_pages = [], []
     for page, info in list(data.items()):
         if source_name not in info.get("sources", []):
             continue
@@ -381,7 +433,7 @@ async def delete_source(wiki_name: str, source_name: str) -> dict:
             page_path = wiki_dir / page
             if page_path.exists():
                 page_path.unlink()
-                deleted_pages.append(page)
+            deleted_pages.append(page)
             del data[page]
         else:
             info["sources"].remove(source_name)
@@ -395,35 +447,21 @@ async def delete_source(wiki_name: str, source_name: str) -> dict:
     with open(meta_file, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-    return {
-        "deleted_pages": deleted_pages,
-        "updated_pages": updated_pages,
-        "deleted_source": source_name,
-        "message": f"已删除来源 {source_name}，删除了 {len(deleted_pages)} 个页面，更新了 {len(updated_pages)} 个页面"
-    }
+    return {"deleted_pages": deleted_pages, "updated_pages": updated_pages, "deleted_source": source_name}
 
 
-@mcp.tool()
-async def update_source(wiki_name: str, source_name: str, new_source: str = "", new_content: str = "") -> dict:
-    """更新一个已 ingest 的原始文件，并局部重建相关 wiki 页面。
-
-    Args:
-        wiki_name: wiki 名称。
-        source_name: 原始文件名，格式如 "raw/锐鹰传感产品总览.md"
-        new_source: 新的文件路径（可选，与 new_content 二选一）
-        new_content: 新的文件内容（可选，与 new_source 二选一）
-    """
-    wiki_dir = Path(_cfg["wikis_root"]) / wiki_name
+@app.put("/api/wikis/{wiki_name}/sources/{source_name:path}")
+async def update_source_api(wiki_name: str, source_name: str, req: UpdateSourceRequest):
+    cfg = get_cfg()
+    wiki_dir = Path(cfg["wikis_root"]) / wiki_name
     meta_file = wiki_dir / ".meta" / "pages.json"
 
     if not wiki_dir.exists():
-        return {"error": f"Wiki '{wiki_name}' 不存在"}
-
+        raise HTTPException(status_code=404, detail=f"Wiki '{wiki_name}' 不存在")
     if not meta_file.exists():
-        return {"error": "没有找到 pages.json，请先 ingest 文件"}
-
-    if not new_source and not new_content:
-        return {"error": "请提供 new_source 或 new_content"}
+        raise HTTPException(status_code=404, detail="没有找到 pages.json")
+    if not req.new_source and not req.new_content:
+        raise HTTPException(status_code=400, detail="请提供 new_source 或 new_content")
 
     with open(meta_file, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -441,11 +479,10 @@ async def update_source(wiki_name: str, source_name: str, new_source: str = "", 
         json.dump(data, f, ensure_ascii=False, indent=2)
 
     raw_path = wiki_dir / source_name
-    if new_content:
-        raw_path.write_text(new_content, encoding="utf-8")
-    elif new_source:
-        import shutil
-        shutil.copy(new_source, raw_path)
+    if req.new_content:
+        raw_path.write_text(req.new_content, encoding="utf-8")
+    elif req.new_source:
+        shutil.copy(req.new_source, raw_path)
 
     before = await _snapshot_wiki(wiki_dir)
     result = await run_ingest(wiki_dir, str(raw_path))
@@ -454,146 +491,26 @@ async def update_source(wiki_name: str, source_name: str, new_source: str = "", 
     if affected["created"] or affected["updated"]:
         _update_pages_meta(wiki_dir, source_name, affected)
 
-    return {
-        "deleted_pages": pages_to_delete,
-        "rebuilt_pages": affected["created"] + affected["updated"],
-        "source": source_name,
-        "message": f"已更新 {source_name}，删除了 {len(pages_to_delete)} 个旧页面，重建了 {len(affected['created']) + len(affected['updated'])} 个页面"
-    }
+    return {"deleted_pages": pages_to_delete, "rebuilt_pages": affected["created"] + affected["updated"], "source": source_name}
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# 权限中间件（纯 ASGI 实现）— 仅拦截 tools/call，不缓冲/修改响应体
-# ══════════════════════════════════════════════════════════════════════════════
-
-class MCPAuthMiddleware:
-    """根据 Authorization header 中的 key，限制可调用的工具。
-
-    - MCP_ADMIN_KEY 命中 → 可调用全部工具
-    - MCP_QUERY_KEY 命中 → 仅可调用 query / list_wikis
-    - 未配置任何 key → 不限制（本地开发）
-
-    仅拦截 tools/call 请求；tools/list 不过滤（query key 仍能看到全部
-    工具名称，但调用管理员工具会被拒绝）。纯 ASGI 实现，避免
-    BaseHTTPMiddleware 与 streamable-http 的 SSE 响应不兼容的问题。
-    """
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or scope["path"] != "/mcp" or scope["method"] != "POST":
-            await self.app(scope, receive, send)
-            return
-
-        admin_key = os.environ.get("MCP_ADMIN_KEY", "")
-        query_key = os.environ.get("MCP_QUERY_KEY", "")
-
-        if not admin_key and not query_key:
-            await self.app(scope, receive, send)
-            return
-
-        headers = dict(scope.get("headers", []))
-        auth = headers.get(b"authorization", b"").decode("latin-1")
-        token = auth.removeprefix("Bearer ").strip()
-
-        if admin_key and token == admin_key:
-            allowed = _ADMIN_TOOLS
-        elif query_key and token == query_key:
-            allowed = _QUERY_TOOLS
-        else:
-            allowed = set()
-
-        # 缓冲请求体（一次性读完，再重放给下游）
-        body = b""
-        more_body = True
-        while more_body:
-            message = await receive()
-            body += message.get("body", b"")
-            more_body = message.get("more_body", False)
-
-        payload = None
-        if body:
-            try:
-                payload = json.loads(body)
-            except json.JSONDecodeError:
-                payload = None
-
-        if payload and payload.get("method") == "tools/call":
-            tool_name = payload.get("params", {}).get("name")
-            if tool_name not in allowed:
-                error_body = json.dumps({
-                    "jsonrpc": "2.0",
-                    "id": payload.get("id"),
-                    "error": {
-                        "code": -32601,
-                        "message": f"Tool '{tool_name}' is not available for this credential",
-                    },
-                }).encode("utf-8")
-
-                await send({
-                    "type": "http.response.start",
-                    "status": 403,
-                    "headers": [(b"content-type", b"application/json")],
-                })
-                await send({
-                    "type": "http.response.body",
-                    "body": error_body,
-                })
-                return
-
-        # 重放请求体给下游（首次返回缓冲的 body，之后转发原始 receive）
-        sent = False
-
-        async def receive_replay():
-            nonlocal sent
-            if not sent:
-                sent = True
-                return {"type": "http.request", "body": body, "more_body": False}
-            return await receive()
-
-        await self.app(scope, receive_replay, send)
-
+# ── 启动 ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="llm-wiki-mcp server")
-    parser.add_argument(
-        "--wikis-root",
-        default=_cfg["wikis_root"],
-        help="Root directory for wiki storage (default: ./wikis)",
-    )
-    parser.add_argument(
-        "--transport",
-        choices=["stdio", "streamable-http"],
-        default="streamable-http",
-        help="Transport mode (default: streamable-http)",
-    )
-    parser.add_argument(
-        "--host",
-        default="0.0.0.0",
-        help="Host for HTTP transport (default: 0.0.0.0)",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8080,
-        help="Port for HTTP transport (default: 8080)",
-    )
+    import argparse
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="llm-wiki-agent server")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--wikis-root", default=None)
+    parser.add_argument("--wiki-name", default=None)
     args = parser.parse_args()
 
-    _cfg["wikis_root"] = args.wikis_root
-    Path(args.wikis_root).mkdir(parents=True, exist_ok=True)
-
-    mcp.settings.host = args.host
-    mcp.settings.port = args.port
-
-    if args.transport == "stdio":
-        mcp.run(transport="stdio")
-        return
-
-    # streamable-http：手动构建 app 以挂载权限中间件
-    app = mcp.streamable_http_app()
-    app = MCPAuthMiddleware(app)
+    if args.wikis_root:
+        os.environ["LLM_WIKI_ROOT"] = args.wikis_root
+    if args.wiki_name:
+        os.environ["LLM_WIKI_NAME"] = args.wiki_name
 
     uvicorn.run(app, host=args.host, port=args.port)
 
